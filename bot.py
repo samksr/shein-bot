@@ -6,13 +6,13 @@ import os
 import re
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
-# SECURE CONFIGURATION (From Zeabur)
+# SECURE CONFIGURATION
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
 
-# Specific Sheinverse Category
+# TARGET: Sheinverse Category
 TARGET_URL = 'https://www.sheinindia.in/c/sverse-5939-37961'
-CHECK_INTERVAL = 300 
+CHECK_INTERVAL = 60  # <--- UPDATED: Checks every 60 seconds for speed
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36',
@@ -26,9 +26,12 @@ first_run = True
 async def send_telegram_alert(product_link):
     if not TELEGRAM_TOKEN or not CHAT_ID: return
     bot = Bot(token=TELEGRAM_TOKEN)
-    keyboard = [[InlineKeyboardButton("🔥 OPEN PRODUCT", url=product_link)]]
+    
+    # The 'url' param here triggers the App automatically on mobile
+    keyboard = [[InlineKeyboardButton("🚀 BUY NOW (APP)", url=product_link)]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    caption = f"🚨 **NEW SHEINVERSE DROP!**\n\n👇 Check it out below:"
+    
+    caption = f"🚨 **FAST ALERT: NEW DROP!**\n\n👇 Click to open in App:"
     try:
         await bot.send_message(chat_id=CHAT_ID, text=caption, parse_mode='Markdown', reply_markup=reply_markup)
     except Exception as e:
@@ -41,6 +44,7 @@ def check_for_new_products():
         response = requests.get(TARGET_URL, headers=HEADERS, timeout=20)
         if response.status_code != 200: return
         soup = BeautifulSoup(response.text, 'html.parser')
+        
         all_links = soup.find_all('a', href=True)
         for link in all_links:
             href = link['href']
@@ -60,7 +64,7 @@ def check_for_new_products():
     except Exception as e: print(f"Error: {e}")
 
 if __name__ == '__main__':
-    print("SheinIndia Monitor Started...")
+    print("Fast Monitor Started...")
     while True:
         check_for_new_products()
         time.sleep(CHECK_INTERVAL)
