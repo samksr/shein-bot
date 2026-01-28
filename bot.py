@@ -8,7 +8,7 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
-# --- CONFIGURATION ---
+# CONFIGURATION
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
 TARGET_URL = 'https://www.sheinindia.in/c/sverse-5939-37961'
@@ -23,63 +23,74 @@ HEADERS = {
 seen_products = set()
 first_run = True
 
-# --- DUMMY WEB SERVER (To keep Zeabur happy) ---
+# --- DUMMY SERVER (Keeps Zeabur Happy) ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
-        self.end_headers()
         self.wfile.write(b"Bot is alive")
+    def log_message(self, format, *args): return
 
 def start_dummy_server():
-    # Zeabur gives us a PORT environment variable. We must listen on it.
     port = int(os.getenv("PORT", 8080))
-    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    print(f"Dummy server listening on port {port}")
-    server.serve_forever()
+    HTTPServer(('0.0.0.0', port), HealthCheckHandler).serve_forever()
 
-# --- BOT LOGIC ---
-async def send_telegram_alert(product_link):
+# --- TELEGRAM LOGIC ---
+async def send_startup():
     if not TELEGRAM_TOKEN or not CHAT_ID: return
     bot = Bot(token=TELEGRAM_TOKEN)
-    keyboard = [[InlineKeyboardButton("🚀 BUY NOW (APP)", url=product_link)]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    caption = f"🚨 **FAST ALERT: NEW DROP!**\n\n👇 Click to open in App:"
-    try:
-        await bot.send_message(chat_id=CHAT_ID, text=caption, parse_mode='Markdown', reply_markup=reply_markup)
-    except Exception as e:
-        print(f"Telegram Error: {e}")
+    await bot.send_message(chat_id=CHAT_ID, text="✅ **BOT ONLINE!**\n\nI am connected. I will check for drops every 60 seconds.", parse_mode='Markdown')
 
+async def send_alert(link):
+    if not TELEGRAM_TOKEN or not CHAT_ID: return
+    bot = Bot(token=TELEGRAM_TOKEN)
+    keyboard = [[InlineKeyboardButton("🚀 BUY NOW", url=link)]]
+    markup = InlineKeyboardMarkup(keyboard)
+    try:
+        await bot.send_message(chat_id=CHAT_ID, text=f"🚨 **NEW DROP!**\n\n[Open App]({link})", parse_mode='Markdown', reply_markup=markup)
+    except Exception as e:
+        print(f"Telegram Error: {e}", flush=True)
+
+# --- MAIN LOOP ---
 def check_for_new_products():
     global first_run
-    print(f"Checking: {TARGET_URL}...")
+    # flush=True forces the logs to appear in Zeabur instantly
+    print(f"Checking Shein... (Tracking {len(seen_products)} items)", flush=True) 
+    
     try:
         response = requests.get(TARGET_URL, headers=HEADERS, timeout=20)
-        if response.status_code != 200: return
+        if response.status_code != 200: 
+            print(f"Status: {response.status_code}", flush=True)
+            return
+
         soup = BeautifulSoup(response.text, 'html.parser')
+        links = soup.find_all('a', href=True)
         
-        all_links = soup.find_all('a', href=True)
-        for link in all_links:
+        for link in links:
             href = link['href']
             if '-p-' in href or '/p/' in href:
                 full_url = "https:" + href if href.startswith('//') else ("https://www.sheinindia.in" + href if not href.startswith('http') else href)
                 try:
-                    product_id = re.search(r'-p-(\d+)', full_url).group(1)
-                    if product_id not in seen_products:
-                        seen_products.add(product_id)
+                    pid = re.search(r'-p-(\d+)', full_url).group(1)
+                    if pid not in seen_products:
+                        seen_products.add(pid)
                         if not first_run:
-                            print(f"New Drop: {full_url}")
-                            asyncio.run(send_telegram_alert(full_url))
+                            print(f"New Drop: {pid}", flush=True)
+                            asyncio.run(send_alert(full_url))
                 except: continue
+        
         if first_run:
-            print(f"Initialized. Tracking {len(seen_products)} items.")
+            print("Initialized.", flush=True)
             first_run = False
-    except Exception as e: print(f"Error: {e}")
+            
+    except Exception as e: 
+        print(f"Error: {e}", flush=True)
 
 if __name__ == '__main__':
-    # Start the dummy server in a background thread
     threading.Thread(target=start_dummy_server, daemon=True).start()
     
-    print("Bot with Dummy Server Started...")
+    print("Bot Starting...", flush=True)
+    asyncio.run(send_startup()) # <--- Sends the "Connected" message
+    
     while True:
         check_for_new_products()
         time.sleep(CHECK_INTERVAL)
