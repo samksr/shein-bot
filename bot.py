@@ -6,9 +6,11 @@ import os
 import re
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
-# --- CONFIGURATION ---
+# SECURE CONFIGURATION (From Zeabur)
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
+
+# Specific Sheinverse Category
 TARGET_URL = 'https://www.sheinindia.in/c/sverse-5939-37961'
 CHECK_INTERVAL = 300 
 
