@@ -1,109 +1,83 @@
-import requests
+import cloudscraper
 import time
 import asyncio
-import os
 import re
-import threading
-import datetime
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import requests
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
-# --- CONFIGURATION ---
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-CHAT_ID = os.getenv('CHAT_ID')
-TARGET_URL = 'https://www.sheinindia.in/c/sverse-5939-37961'
-CHECK_INTERVAL = 60 
+# --- CREDENTIALS ---
+TELEGRAM_TOKEN = "8166552588:AAEbJnG_Mu3yUmj2gQeJNPtn7h2RgNq4W0o"
+CHAT_ID = "1782381176"
 
-# Pretend to be a Desktop PC to get the full source code
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.9',
-}
+TARGET_URL = 'https://www.sheinindia.in/c/sverse-5939-37961'
+CHECK_INTERVAL = 45
 
 seen_products = set()
 first_run = True
 
-def log(message):
-    now = datetime.datetime.now().strftime("%H:%M:%S")
-    print(f"[{now}] {message}", flush=True)
-
-# --- DUMMY SERVER ---
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.wfile.write(b"Shein X-Ray Bot Running")
-    def log_message(self, format, *args): return
-
-def start_dummy_server():
-    port = int(os.getenv("PORT", 8080))
-    HTTPServer(('0.0.0.0', port), HealthCheckHandler).serve_forever()
-
-# --- TELEGRAM ALERTS ---
 async def send_startup(count):
-    if not TELEGRAM_TOKEN or not CHAT_ID: return
     bot = Bot(token=TELEGRAM_TOKEN)
-    await bot.send_message(chat_id=CHAT_ID, text=f"☢️ **X-RAY MODE ACTIVE**\n\nI scanned the raw code and found **{count}** hidden items.\nWaiting for new drops...", parse_mode='Markdown')
+    await bot.send_message(chat_id=CHAT_ID, text=f"🛡️ **ROBUST BOT ACTIVE**\n\nConnection secured.\nFound **{count}** existing items.", parse_mode='Markdown')
 
 async def send_alert(pid):
-    if not TELEGRAM_TOKEN or not CHAT_ID: return
     bot = Bot(token=TELEGRAM_TOKEN)
-    # Reconstruct the link using the ID
     link = f"https://www.sheinindia.in/product-p-{pid}.html"
     keyboard = [[InlineKeyboardButton("🛍️ BUY NOW (APP)", url=link)]]
     markup = InlineKeyboardMarkup(keyboard)
-    
     try:
-        await bot.send_message(chat_id=CHAT_ID, text=f"🚨 **NEW DROP DETECTED!**\n\n🆔 `{pid}`\n👇 Click to grab it:", parse_mode='Markdown', reply_markup=markup)
+        await bot.send_message(chat_id=CHAT_ID, text=f"🚨 **NEW DROP!**\n\n🆔 `{pid}`", parse_mode='Markdown', reply_markup=markup)
     except Exception as e:
-        log(f"Telegram Error: {e}")
+        print(f"Telegram Error: {e}")
 
-# --- X-RAY LOGIC ---
 def check_for_new_products():
     global first_run
+    print(f"Scanning... ", end="")
     
     try:
-        response = requests.get(TARGET_URL, headers=HEADERS, timeout=20)
+        # Create scraper with specific mobile browser footprint
+        scraper = cloudscraper.create_scraper(
+            browser={'browser': 'chrome', 'platform': 'android', 'mobile': True}
+        )
         
-        # METHOD: Regex Search on RAW TEXT (Bypasses HTML parsing issues)
-        # Finds patterns like "-p-1234567" or "goods_id: 1234567"
-        found_ids = set(re.findall(r'-p-(\d+)', response.text))
+        # Timeout added to prevent hanging
+        response = scraper.get(TARGET_URL, timeout=15)
         
-        # Sometimes IDs are hidden in JSON as "goods_id"
-        json_ids = set(re.findall(r'"goods_id":"(\d+)"', response.text))
-        found_ids.update(json_ids)
-        
-        if len(found_ids) == 0:
-            log("⚠️ Still seeing 0 items. Shein might be serving a CAPTCHA page.")
-            # Print a snippet of what we actually got (for debugging)
-            log(f"Page Preview: {response.text[:100]}...")
+        # Check for Hard Block
+        if response.status_code == 403 or "Access Denied" in response.text:
+            print("❌ BLOCKED. (Toggle Airplane Mode for 5s!)")
             return
 
-        new_items_count = 0
+        # X-RAY SCAN
+        found_ids = set(re.findall(r'-p-(\d+)', response.text))
+        found_ids.update(re.findall(r'"goods_id":"(\d+)"', response.text))
         
+        if len(found_ids) == 0:
+            # DEBUG: Print what the page actually is
+            page_title = re.search(r'<title>(.*?)</title>', response.text)
+            title_text = page_title.group(1) if page_title else "Unknown Page"
+            print(f"⚠️ 0 items. Page Title: [{title_text}]")
+            return
+
+        print(f"✅ OK ({len(found_ids)} items)")
+
         for pid in found_ids:
             if pid not in seen_products:
                 seen_products.add(pid)
                 if not first_run:
-                    log(f"🔥 NEW ITEM: {pid}")
+                    print(f"🔥 NEW: {pid}")
                     asyncio.run(send_alert(pid))
-                    new_items_count += 1
         
         if first_run:
-            log(f"Initialized. Memorized {len(seen_products)} hidden items.")
             asyncio.run(send_startup(len(seen_products)))
             first_run = False
-        elif new_items_count == 0:
-            # Heartbeat log so you know it's working
-            # log(f"Scanned {len(found_ids)} items. No changes.")
-            pass
-
-    except Exception as e: 
-        log(f"Error: {e}")
+            
+    except requests.exceptions.ConnectionError:
+        print("⚠️ No Internet. Waiting...")
+    except Exception as e:
+        print(f"Error: {e}")
 
 if __name__ == '__main__':
-    threading.Thread(target=start_dummy_server, daemon=True).start()
-    log("X-Ray Bot Starting...")
+    print("🚀 Robust Bot Started...")
     while True:
         check_for_new_products()
         time.sleep(CHECK_INTERVAL)
