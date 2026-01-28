@@ -5,14 +5,19 @@ import asyncio
 import os
 import re
 import threading
+import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
-# CONFIGURATION
+# --- CONFIGURATION ---
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
+
+# 🔒 TARGET: Sheinverse Category
 TARGET_URL = 'https://www.sheinindia.in/c/sverse-5939-37961'
-CHECK_INTERVAL = 60
+
+# ⚡ SPEED: Check every 45 seconds
+CHECK_INTERVAL = 45 
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36',
@@ -23,73 +28,92 @@ HEADERS = {
 seen_products = set()
 first_run = True
 
-# --- DUMMY SERVER (Keeps Zeabur Happy) ---
+# --- HELPER: TIMESTAMPED LOGS ---
+def log(message):
+    # Prints logs with current time for easier debugging in Zeabur
+    now = datetime.datetime.now().strftime("%H:%M:%S")
+    print(f"[{now}] {message}", flush=True)
+
+# --- DUMMY SERVER (Zeabur Fix) ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
-        self.wfile.write(b"Bot is alive")
+        self.wfile.write(b"Shein Bot Pro is Running")
     def log_message(self, format, *args): return
 
 def start_dummy_server():
     port = int(os.getenv("PORT", 8080))
     HTTPServer(('0.0.0.0', port), HealthCheckHandler).serve_forever()
 
-# --- TELEGRAM LOGIC ---
+# --- TELEGRAM ALERTS ---
 async def send_startup():
     if not TELEGRAM_TOKEN or not CHAT_ID: return
     bot = Bot(token=TELEGRAM_TOKEN)
-    await bot.send_message(chat_id=CHAT_ID, text="✅ **BOT ONLINE!**\n\nI am connected. I will check for drops every 60 seconds.", parse_mode='Markdown')
+    await bot.send_message(chat_id=CHAT_ID, text=f"🚀 **BOT UPGRADED & ONLINE**\n\n⚡ Speed: 45s\n🎯 Target: Sheinverse", parse_mode='Markdown')
 
-async def send_alert(link):
+async def send_alert(link, pid):
     if not TELEGRAM_TOKEN or not CHAT_ID: return
     bot = Bot(token=TELEGRAM_TOKEN)
-    keyboard = [[InlineKeyboardButton("🚀 BUY NOW", url=link)]]
+    keyboard = [[InlineKeyboardButton("🛍️ BUY NOW (APP)", url=link)]]
     markup = InlineKeyboardMarkup(keyboard)
     try:
-        await bot.send_message(chat_id=CHAT_ID, text=f"🚨 **NEW DROP!**\n\n[Open App]({link})", parse_mode='Markdown', reply_markup=markup)
+        # We send the Product ID in the message so you can verify it's new
+        await bot.send_message(chat_id=CHAT_ID, text=f"🚨 **NEW DROP DETECTED!**\n\n🆔 ID: `{pid}`\n\n👇 Click to grab it:", parse_mode='Markdown', reply_markup=markup)
     except Exception as e:
-        print(f"Telegram Error: {e}", flush=True)
+        log(f"Telegram Error: {e}")
 
-# --- MAIN LOOP ---
+# --- MAIN CHECK LOGIC ---
 def check_for_new_products():
     global first_run
-    # flush=True forces the logs to appear in Zeabur instantly
-    print(f"Checking Shein... (Tracking {len(seen_products)} items)", flush=True) 
     
     try:
-        response = requests.get(TARGET_URL, headers=HEADERS, timeout=20)
+        # Timeout lowered to 15s to fail fast and retry if stuck
+        response = requests.get(TARGET_URL, headers=HEADERS, timeout=15)
+        
         if response.status_code != 200: 
-            print(f"Status: {response.status_code}", flush=True)
+            log(f"Server returned {response.status_code}. Retrying...")
             return
 
         soup = BeautifulSoup(response.text, 'html.parser')
         links = soup.find_all('a', href=True)
         
+        current_scan_count = 0
+
         for link in links:
             href = link['href']
+            # Strict Filter: Must be a product link
             if '-p-' in href or '/p/' in href:
                 full_url = "https:" + href if href.startswith('//') else ("https://www.sheinindia.in" + href if not href.startswith('http') else href)
                 try:
+                    # Extract ID
                     pid = re.search(r'-p-(\d+)', full_url).group(1)
+                    current_scan_count += 1
+                    
                     if pid not in seen_products:
                         seen_products.add(pid)
                         if not first_run:
-                            print(f"New Drop: {pid}", flush=True)
-                            asyncio.run(send_alert(full_url))
+                            log(f"🔥 NEW ITEM: {pid}")
+                            asyncio.run(send_alert(full_url, pid))
                 except: continue
         
         if first_run:
-            print("Initialized.", flush=True)
+            log(f"Initialized. Memorized {len(seen_products)} items.")
             first_run = False
+        else:
+            # Only print this every check if you want to see it working
+            # log(f"Scanned {current_scan_count} items. No new drops.")
+            pass
             
+    except requests.exceptions.RequestException:
+        log("Network error (Shein might be slow). Retrying next cycle.")
     except Exception as e: 
-        print(f"Error: {e}", flush=True)
+        log(f"Unexpected Error: {e}")
 
 if __name__ == '__main__':
     threading.Thread(target=start_dummy_server, daemon=True).start()
     
-    print("Bot Starting...", flush=True)
-    asyncio.run(send_startup()) # <--- Sends the "Connected" message
+    log("Bot Starting...")
+    asyncio.run(send_startup())
     
     while True:
         check_for_new_products()
