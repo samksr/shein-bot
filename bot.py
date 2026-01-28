@@ -1,83 +1,138 @@
-import cloudscraper
+import requests
 import time
 import asyncio
-import re
-import requests
+import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
-# --- CREDENTIALS ---
+# --- CONFIGURATION ---
 TELEGRAM_TOKEN = "8166552588:AAEbJnG_Mu3yUmj2gQeJNPtn7h2RgNq4W0o"
 CHAT_ID = "1782381176"
 
-TARGET_URL = 'https://www.sheinindia.in/c/sverse-5939-37961'
-CHECK_INTERVAL = 45
+# --- RAPID API CONFIG (Using the Key you shared) ---
+API_HOST = "shein-api-v1.p.rapidapi.com"
+API_KEY = "ad5228b4c6msh52eb82c89fe6e79p1bd725jsned948331ba28"
+API_URL = "https://shein-api-v1.p.rapidapi.com/api/v1/product/search"
 
-seen_products = set()
+# Check every 5 minutes (300s) to save API credits
+CHECK_INTERVAL = 300 
+
+# SEARCH PARAMETERS (Sheinverse Category + New Arrivals)
+QUERY_PARAMS = {
+    "keyword": "sverse-5939-37961", 
+    "sort": "7",                    # 7 = New Arrivals
+    "country": "IN",
+    "language": "en",
+    "limit": "20",
+    "page": "1"
+}
+
+seen_ids = set()
 first_run = True
 
-async def send_startup(count):
-    bot = Bot(token=TELEGRAM_TOKEN)
-    await bot.send_message(chat_id=CHAT_ID, text=f"🛡️ **ROBUST BOT ACTIVE**\n\nConnection secured.\nFound **{count}** existing items.", parse_mode='Markdown')
+# --- DUMMY SERVER (Keeps Zeabur Running) ---
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.wfile.write(b"Shein API Bot Running")
+    def log_message(self, format, *args): return
 
-async def send_alert(pid):
+def start_dummy_server():
+    port = int(os.getenv("PORT", 8080))
+    print(f"🌍 Server started on port {port}")
+    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    server.serve_forever()
+
+# --- TELEGRAM ALERTS ---
+async def send_alert(name, price, image, link, pid):
     bot = Bot(token=TELEGRAM_TOKEN)
-    link = f"https://www.sheinindia.in/product-p-{pid}.html"
-    keyboard = [[InlineKeyboardButton("🛍️ BUY NOW (APP)", url=link)]]
+    
+    caption = f"💎 **API DROP DETECTED!**\n\n"
+    caption += f"📦 **{name}**\n"
+    caption += f"💰 Price: {price}\n"
+    caption += f"🆔 `{pid}`"
+
+    keyboard = [[InlineKeyboardButton("🛍️ BUY NOW", url=link)]]
     markup = InlineKeyboardMarkup(keyboard)
+
     try:
-        await bot.send_message(chat_id=CHAT_ID, text=f"🚨 **NEW DROP!**\n\n🆔 `{pid}`", parse_mode='Markdown', reply_markup=markup)
+        if image:
+            await bot.send_photo(chat_id=CHAT_ID, photo=image, caption=caption, parse_mode='Markdown', reply_markup=markup)
+        else:
+            await bot.send_message(chat_id=CHAT_ID, text=caption, parse_mode='Markdown', reply_markup=markup)
     except Exception as e:
         print(f"Telegram Error: {e}")
 
-def check_for_new_products():
+async def send_startup(count):
+    bot = Bot(token=TELEGRAM_TOKEN)
+    await bot.send_message(chat_id=CHAT_ID, text=f"✅ **ZEABUR BOT ONLINE**\n\nUsing RapidAPI (No Blocks).\nTracking **{count}** items.", parse_mode='Markdown')
+
+# --- MAIN LOGIC ---
+def check_api():
     global first_run
-    print(f"Scanning... ", end="")
+    print(f"Contacting API... ", end="", flush=True)
     
+    headers = {
+        "x-rapidapi-key": API_KEY,
+        "x-rapidapi-host": API_HOST
+    }
+
     try:
-        # Create scraper with specific mobile browser footprint
-        scraper = cloudscraper.create_scraper(
-            browser={'browser': 'chrome', 'platform': 'android', 'mobile': True}
-        )
+        response = requests.get(API_URL, headers=headers, params=QUERY_PARAMS, timeout=20)
         
-        # Timeout added to prevent hanging
-        response = scraper.get(TARGET_URL, timeout=15)
-        
-        # Check for Hard Block
-        if response.status_code == 403 or "Access Denied" in response.text:
-            print("❌ BLOCKED. (Toggle Airplane Mode for 5s!)")
+        if response.status_code != 200:
+            print(f"❌ API Error: {response.status_code}")
             return
 
-        # X-RAY SCAN
-        found_ids = set(re.findall(r'-p-(\d+)', response.text))
-        found_ids.update(re.findall(r'"goods_id":"(\d+)"', response.text))
+        data = response.json()
         
-        if len(found_ids) == 0:
-            # DEBUG: Print what the page actually is
-            page_title = re.search(r'<title>(.*?)</title>', response.text)
-            title_text = page_title.group(1) if page_title else "Unknown Page"
-            print(f"⚠️ 0 items. Page Title: [{title_text}]")
+        # Safely extract products list
+        products = data.get('data', [])
+        if not products and 'info' in data:
+             products = data['info'].get('products', [])
+        
+        if not products:
+            print(f"⚠️ No products found. (API returned empty list)")
             return
 
-        print(f"✅ OK ({len(found_ids)} items)")
+        print(f"✅ Received {len(products)} items.", flush=True)
 
-        for pid in found_ids:
-            if pid not in seen_products:
-                seen_products.add(pid)
+        for item in products:
+            # Extract Info
+            pid = str(item.get('goods_id') or item.get('id'))
+            name = item.get('goods_name') or item.get('name')
+            
+            # Price
+            price = item.get('sale_price', {}).get('amountWithSymbol', 'N/A')
+            
+            # Image
+            img_raw = item.get('goods_img') or item.get('main_image')
+            image = f"https:{img_raw}" if img_raw and img_raw.startswith("//") else img_raw
+            
+            # Link
+            link = f"https://www.sheinindia.in/product-p-{pid}.html"
+
+            if pid not in seen_ids:
+                seen_ids.add(pid)
                 if not first_run:
-                    print(f"🔥 NEW: {pid}")
-                    asyncio.run(send_alert(pid))
+                    print(f"🔥 NEW: {pid}", flush=True)
+                    asyncio.run(send_alert(name, price, image, link, pid))
         
         if first_run:
-            asyncio.run(send_startup(len(seen_products)))
+            print("Initialized.", flush=True)
+            asyncio.run(send_startup(len(seen_ids)))
             first_run = False
-            
-    except requests.exceptions.ConnectionError:
-        print("⚠️ No Internet. Waiting...")
+
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error: {e}", flush=True)
 
 if __name__ == '__main__':
-    print("🚀 Robust Bot Started...")
+    # Start Dummy Server for Zeabur
+    threading.Thread(target=start_dummy_server, daemon=True).start()
+    
+    print("🚀 Bot Started...", flush=True)
+    
     while True:
-        check_for_new_products()
+        check_api()
         time.sleep(CHECK_INTERVAL)
