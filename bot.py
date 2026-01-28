@@ -4,15 +4,15 @@ import time
 import asyncio
 import os
 import re
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
-# SECURE CONFIGURATION
+# --- CONFIGURATION ---
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
-
-# TARGET: Sheinverse Category
 TARGET_URL = 'https://www.sheinindia.in/c/sverse-5939-37961'
-CHECK_INTERVAL = 60  # <--- UPDATED: Checks every 60 seconds for speed
+CHECK_INTERVAL = 60
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36',
@@ -23,14 +23,26 @@ HEADERS = {
 seen_products = set()
 first_run = True
 
+# --- DUMMY WEB SERVER (To keep Zeabur happy) ---
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive")
+
+def start_dummy_server():
+    # Zeabur gives us a PORT environment variable. We must listen on it.
+    port = int(os.getenv("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    print(f"Dummy server listening on port {port}")
+    server.serve_forever()
+
+# --- BOT LOGIC ---
 async def send_telegram_alert(product_link):
     if not TELEGRAM_TOKEN or not CHAT_ID: return
     bot = Bot(token=TELEGRAM_TOKEN)
-    
-    # The 'url' param here triggers the App automatically on mobile
     keyboard = [[InlineKeyboardButton("🚀 BUY NOW (APP)", url=product_link)]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
     caption = f"🚨 **FAST ALERT: NEW DROP!**\n\n👇 Click to open in App:"
     try:
         await bot.send_message(chat_id=CHAT_ID, text=caption, parse_mode='Markdown', reply_markup=reply_markup)
@@ -64,7 +76,10 @@ def check_for_new_products():
     except Exception as e: print(f"Error: {e}")
 
 if __name__ == '__main__':
-    print("Fast Monitor Started...")
+    # Start the dummy server in a background thread
+    threading.Thread(target=start_dummy_server, daemon=True).start()
+    
+    print("Bot with Dummy Server Started...")
     while True:
         check_for_new_products()
         time.sleep(CHECK_INTERVAL)
