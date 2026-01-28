@@ -1,5 +1,4 @@
 import requests
-from bs4 import BeautifulSoup
 import time
 import asyncio
 import os
@@ -13,13 +12,13 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
 TARGET_URL = 'https://www.sheinindia.in/c/sverse-5939-37961'
-CHECK_INTERVAL = 45
+CHECK_INTERVAL = 60 
 
+# Pretend to be a Desktop PC to get the full source code
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.9',
-    'Referer': 'https://www.sheinindia.in/'
 }
 
 seen_products = set()
@@ -33,7 +32,7 @@ def log(message):
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
-        self.wfile.write(b"Shein Image Bot Running")
+        self.wfile.write(b"Shein X-Ray Bot Running")
     def log_message(self, format, *args): return
 
 def start_dummy_server():
@@ -41,81 +40,70 @@ def start_dummy_server():
     HTTPServer(('0.0.0.0', port), HealthCheckHandler).serve_forever()
 
 # --- TELEGRAM ALERTS ---
-async def send_startup():
+async def send_startup(count):
     if not TELEGRAM_TOKEN or not CHAT_ID: return
     bot = Bot(token=TELEGRAM_TOKEN)
-    await bot.send_message(chat_id=CHAT_ID, text=f"🚀 **BOT RELOADED**\n\n📸 Now sending Images + Links\n⚡ Check Rate: 45s", parse_mode='Markdown')
+    await bot.send_message(chat_id=CHAT_ID, text=f"☢️ **X-RAY MODE ACTIVE**\n\nI scanned the raw code and found **{count}** hidden items.\nWaiting for new drops...", parse_mode='Markdown')
 
-async def send_alert(link, pid, image_url):
+async def send_alert(pid):
     if not TELEGRAM_TOKEN or not CHAT_ID: return
     bot = Bot(token=TELEGRAM_TOKEN)
-    
+    # Reconstruct the link using the ID
+    link = f"https://www.sheinindia.in/product-p-{pid}.html"
     keyboard = [[InlineKeyboardButton("🛍️ BUY NOW (APP)", url=link)]]
     markup = InlineKeyboardMarkup(keyboard)
     
-    caption = f"🚨 **NEW DROP DETECTED!**\n\n🆔 `{pid}`\n👇 Click to grab it:"
-    
     try:
-        if image_url:
-            await bot.send_photo(chat_id=CHAT_ID, photo=image_url, caption=caption, parse_mode='Markdown', reply_markup=markup)
-        else:
-            # Fallback if image fails
-            await bot.send_message(chat_id=CHAT_ID, text=caption, parse_mode='Markdown', reply_markup=markup)
+        await bot.send_message(chat_id=CHAT_ID, text=f"🚨 **NEW DROP DETECTED!**\n\n🆔 `{pid}`\n👇 Click to grab it:", parse_mode='Markdown', reply_markup=markup)
     except Exception as e:
         log(f"Telegram Error: {e}")
 
-# --- MAIN LOGIC ---
+# --- X-RAY LOGIC ---
 def check_for_new_products():
     global first_run
     
     try:
-        response = requests.get(TARGET_URL, headers=HEADERS, timeout=15)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        links = soup.find_all('a', href=True)
+        response = requests.get(TARGET_URL, headers=HEADERS, timeout=20)
         
-        current_count = 0
+        # METHOD: Regex Search on RAW TEXT (Bypasses HTML parsing issues)
+        # Finds patterns like "-p-1234567" or "goods_id: 1234567"
+        found_ids = set(re.findall(r'-p-(\d+)', response.text))
+        
+        # Sometimes IDs are hidden in JSON as "goods_id"
+        json_ids = set(re.findall(r'"goods_id":"(\d+)"', response.text))
+        found_ids.update(json_ids)
+        
+        if len(found_ids) == 0:
+            log("⚠️ Still seeing 0 items. Shein might be serving a CAPTCHA page.")
+            # Print a snippet of what we actually got (for debugging)
+            log(f"Page Preview: {response.text[:100]}...")
+            return
 
-        for link in links:
-            href = link['href']
-            if '-p-' in href or '/p/' in href:
-                full_url = "https:" + href if href.startswith('//') else ("https://www.sheinindia.in" + href if not href.startswith('http') else href)
-                
-                try:
-                    pid = re.search(r'-p-(\d+)', full_url).group(1)
-                    current_count += 1
-                    
-                    if pid not in seen_products:
-                        seen_products.add(pid)
-                        
-                        if not first_run:
-                            # --- IMAGE EXTRACTION LOGIC ---
-                            img_tag = link.find('img')
-                            image_url = None
-                            if img_tag:
-                                # Try 'data-src' first (Shein uses this for lazy loading)
-                                raw_img = img_tag.get('data-src') or img_tag.get('src')
-                                if raw_img:
-                                    if raw_img.startswith('//'):
-                                        image_url = "https:" + raw_img
-                                    elif raw_img.startswith('http'):
-                                        image_url = raw_img
-                            
-                            log(f"🔥 NEW ITEM: {pid} (Img: {'Yes' if image_url else 'No'})")
-                            asyncio.run(send_alert(full_url, pid, image_url))
-                            
-                except: continue
+        new_items_count = 0
+        
+        for pid in found_ids:
+            if pid not in seen_products:
+                seen_products.add(pid)
+                if not first_run:
+                    log(f"🔥 NEW ITEM: {pid}")
+                    asyncio.run(send_alert(pid))
+                    new_items_count += 1
         
         if first_run:
-            log(f"Initialized. Memorized {len(seen_products)} items.")
+            log(f"Initialized. Memorized {len(seen_products)} hidden items.")
+            asyncio.run(send_startup(len(seen_products)))
             first_run = False
+        elif new_items_count == 0:
+            # Heartbeat log so you know it's working
+            # log(f"Scanned {len(found_ids)} items. No changes.")
+            pass
 
     except Exception as e: 
         log(f"Error: {e}")
 
 if __name__ == '__main__':
     threading.Thread(target=start_dummy_server, daemon=True).start()
-    log("Image Bot Starting...")
-    asyncio.run(send_startup())
+    log("X-Ray Bot Starting...")
     while True:
         check_for_new_products()
         time.sleep(CHECK_INTERVAL)
